@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+transformers
+torch
+sentence-transformers
+chromadb
+pypdf
+pdfplumber
+pymupdf
+pandas
+python-multipart
+scikit-learn
+tqdm
+streamlit
+tabulate
