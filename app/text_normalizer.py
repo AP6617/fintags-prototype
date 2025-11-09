@@ -1,28 +1,51 @@
 # app/text_normalizer.py
 import re
-from typing import List
 
-_SENT_END = re.compile(r"(?<=[\.\?\!])\s+(?=[A-Z(])")
+# keep your existing YEAR regex elsewhere if you import it there
 
-def split_sentences(text: str) -> List[str]:
-    # normalize spaces
-    t = re.sub(r"\s+", " ", text.strip())
-    if not t:
+# Normalize fancy dashes to '-' and join "Guidance:" with its continuation.
+_DASHES = re.compile(r"[–—-]")
+_MULTI_SPACE = re.compile(r"\s{2,}")
+_HYPH_SPLIT_FIX = re.compile(r"(\w)-\s+(\w)")
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+
+def normalize_page_text(raw: str) -> str:
+    if not raw:
+        return ""
+    s = raw.replace("\r", " ").replace("\n", " ")
+    s = _DASHES.sub("-", s)                  # normalize en/em dashes
+    s = _HYPH_SPLIT_FIX.sub(r"\1\2", s)      # fix hyphenated wraps
+    s = _MULTI_SPACE.sub(" ", s).strip()
+    return s
+
+def split_into_sentences(text: str):
+    """
+    Split, but stitch 'Guidance:' and similar labels with the following sentence.
+    Also avoids splitting on semicolons so multi-metric lines stay together.
+    """
+    if not text:
         return []
-    parts = re.split(_SENT_END, t)
-    return [p.strip() for p in parts if p.strip()]
 
-# Keep sentences that are likely financial (has number + finance words)
-_FIN_WORDS = ("revenue","income","eps","earnings","margin","cost","expenses","operating",
-              "cash","share","tax","capex","capital","dividend","liabilities","assets",
-              "equity","sales","guidance","growth","yoy","qoq","year over year","quarter over quarter",
-              "family of apps","reality labs")
+    # first split by sentence enders
+    parts = _SPLIT_ON_ENDERS(text)
 
-def looks_financial_sentence(s: str) -> bool:
-    sl = s.lower()
-    if not any(w in sl for w in _FIN_WORDS):
-        return False
-    if not re.search(r"\d", s):
-        # allow purely financial wording sometimes
-        return any(k in sl for k in ("revenue","eps","net income","operating income","margin"))
-    return True
+    # stitch label-like prefixes to next chunk
+    stitched = []
+    i = 0
+    while i < len(parts):
+        cur = parts[i].strip()
+        if cur.endswith(":") and i + 1 < len(parts):
+            nxt = parts[i + 1].strip()
+            stitched.append(f"{cur} {nxt}")
+            i += 2
+        else:
+            stitched.append(cur)
+            i += 1
+
+    # final cleanup & drop empties
+    return [p.strip() for p in stitched if p.strip()]
+
+def _SPLIT_ON_ENDERS(text: str):
+    # don’t split on semicolons; we want full multi-metric sentences highlighted
+    # split on . ! ? followed by space + capital/(
+    return _SENT_SPLIT.split(text)

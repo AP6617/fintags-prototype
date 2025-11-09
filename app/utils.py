@@ -157,3 +157,35 @@ def parse_numeric(text: str) -> Tuple[float, str, str]:
         val = m.group(1) or m.group(2)
         return float(val.replace(",", "")), UNIT_MAP["usd/share"], m.group(0)
     return float("nan"), UNIT_MAP["none"], ""
+# --- Financial sentence gate (add/replace this only) -------------------------
+import re
+
+_METRIC_TOKENS = (
+    "revenue", "net income", "eps", "earnings per share",
+    "margin", "gross margin", "operating income",
+    "cash", "cash flow", "capex", "capital expenditures",
+    "debt", "guidance", "gmv", "arr", "backlog", "bookings",
+)
+
+def is_financial_sentence(sent: str) -> bool:
+    """Return True if the sentence likely contains finance-relevant content.
+
+    Keeps lines with metrics, money/percent, or numbers.
+    Suppresses 'year-only' lines unless they also include a metric or value.
+    """
+    s = (sent or "").strip()
+    if not s:
+        return False
+    s_low = s.lower()
+
+    has_year = re.search(r'\b(19|20)\d{2}\b', s_low) is not None
+    has_metric_kw = any(tok in s_low for tok in _METRIC_TOKENS)
+    has_number = re.search(r'\d', s_low) is not None
+    has_pct_or_money = re.search(r'\d{1,3}\s?%|\$|€|£|billion|million|bn|mn', s_low) is not None
+
+    # Suppress year-only lines (e.g., “FY2024 overview”) unless they carry metrics/values
+    if has_year and not has_pct_or_money and not has_metric_kw:
+        return False
+
+    return has_metric_kw or has_pct_or_money or has_number
+# ---------------------------------------------------------------------------

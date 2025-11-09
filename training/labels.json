@@ -1,0 +1,72 @@
+{
+  "pairs": [
+    [
+      "CapEx",
+      "nan"
+    ],
+    [
+      "Cash Flow",
+      "nan"
+    ],
+    [
+      "Debt",
+      "Decrease"
+    ],
+    [
+      "Debt",
+      "Increase"
+    ],
+    [
+      "Debt",
+      "nan"
+    ],
+    [
+      "EPS",
+      "Increase"
+    ],
+    [
+      "EPS",
+      "nan"
+    ],
+    [
+      "General",
+      "nan"
+    ],
+    [
+      "Gross Margin",
+      "Increase"
+    ],
+    [
+      "Gross Margin",
+      "nan"
+    ],
+    [
+      "Net Income",
+      "Increase"
+    ],
+    [
+      "Net Income",
+      "nan"
+    ],
+    [
+      "Opex",
+      "nan"
+    ],
+    [
+      "Revenue",
+      "Decrease"
+    ],
+    [
+      "Revenue",
+      "Increase"
+    ],
+    [
+      "Revenue",
+      "nan"
+    ],
+    [
+      "Stock Price",
+      "nan"
+    ]
+  ]
+}

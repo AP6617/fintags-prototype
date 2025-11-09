@@ -1,283 +1,339 @@
+# streamlit_app.py
+from __future__ import annotations
+
+import io
 import os
+API = os.getenv("FINTAGS_API", "http://127.0.0.1:8000")
+
+import time
 import json
-import requests
+import base64
 import pandas as pd
 import streamlit as st
+import requests
+from collections import Counter
 
-# -----------------------------
-# Page / Backend Config
-# -----------------------------
-st.set_page_config(page_title="FinTags – UI", layout="wide")
+# -------------------------
+# CONFIG
+# -------------------------
+API_BASE = os.getenv("FINTAGS_API", "http://127.0.0.1:8000")
 
-# Robust backend URL discovery (env -> secrets -> default)
-BACKEND = os.getenv("FINTAGS_BACKEND_URL")
-if not BACKEND:
-    try:
-        BACKEND = st.secrets["backend_url"]
-    except Exception:
-        BACKEND = "http://127.0.0.1:8000"
+st.set_page_config(
+    page_title="FinTags AI",
+    page_icon="🧾",
+    layout="wide",
+)
 
-# -----------------------------
-# HTTP helpers
-# -----------------------------
-def _get_keywords():
-    try:
-        r = requests.get(f"{BACKEND}/config/keywords", timeout=10)
-        r.raise_for_status()
-        return r.json().get("keywords", {})
-    except Exception as e:
-        st.error(f"Failed to load keywords: {e}")
-        return {}
-
-def _post_keywords(payload: dict):
-    try:
-        r = requests.post(f"{BACKEND}/config/keywords", json=payload, timeout=20)
-        r.raise_for_status()
-        return r.json().get("keywords", {})
-    except Exception as e:
-        st.error(f"Failed to update keywords: {e}")
-        return None
-
-def _process_pdf(uploaded_file):
-    files = {
-        "file": (uploaded_file.name, uploaded_file.getbuffer(), uploaded_file.type or "application/pdf")
-    }
-    r = requests.post(f"{BACKEND}/process/upload", files=files, timeout=120)
-    r.raise_for_status()
-    return r.json()
-
-def _download_bytes(pathname: str):
-    r = requests.get(f"{BACKEND}/download/{pathname}", timeout=60)
-    r.raise_for_status()
-    return r.content
-
-# -----------------------------
-# Styles (chips + layout)
-# -----------------------------
+# -------------------------
+# LIGHT THEME TWEAKS (to mimic your UI)
+# -------------------------
 st.markdown(
     """
     <style>
-    .chip-wrap {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-    }
-    .chip {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-        padding: 10px 14px;
-        border-radius: 18px;
-        background: #E8F3FF;         /* soft blue bg */
-        color: #0B5CAD;              /* deep blue text */
-        font-weight: 600;
-        font-size: 13px;
-        line-height: 1;
-        user-select: none;
-    }
-    .chip .closebtn{
-        position: absolute;
-        top: -6px;
-        right: -6px;
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        background: #0B5CAD;
-        color: white;
-        font-size: 12px;
-        line-height: 18px;
-        text-align: center;
-        cursor: pointer;
-    }
-    .chip .closebtn:hover{ opacity: 0.9; }
-    .chip-title { padding-right: 2px; }
-    .section-box { padding: 14px; border: 1px solid #e6e6e6; border-radius: 10px; }
+      .big-title { font-size: 40px; font-weight: 800; letter-spacing: .2px; }
+      .subtle { color:#667085; }
+      .pill { display:inline-flex; align-items:center; gap:.5rem; background:#EEF2FF; color:#3538CD;
+              padding:.45rem .75rem; border-radius:999px; font-weight:600; }
+      .card { border:1px solid #EAECF0; border-radius:14px; padding:20px; background:white; }
+      .metric { font-size:40px; font-weight:800; }
+      .metric-label { color:#667085; font-weight:600; }
+      .good-btn { background:#16a34a; color:white; padding:.6rem 1rem; border-radius:10px; font-weight:700; }
+      .blue-btn { background:#1D4ED8; color:white; padding:.6rem 1rem; border-radius:10px; font-weight:700; }
+      .icon { font-weight:900; margin-right:.4rem; }
+      .tabcont { padding-top:.6rem; }
+      .table thead tr th { font-weight:700; }
+      .chip { background:#EEF2FF; color:#3538CD; padding:.35rem .7rem; border-radius:999px; }
+      .trend { background:#E7F8ED; color:#067647; padding:.2rem .6rem; border-radius:999px; font-weight:700; }
+      .del { cursor:pointer; color:#667085; }
+      .del:hover { color:#ef4444; }
+      .kw-chip { background:#EEF2FF; color:#3538CD; padding:.45rem .8rem; border-radius:999px; display:inline-flex; align-items:center; gap:.5rem; margin:.25rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# Sidebar (Reset to defaults)
-# -----------------------------
-with st.sidebar:
-    st.markdown("### FinTags Controls")
-    st.write("Manage **keywords**, upload PDFs, preview results, and download outputs.")
-    if st.button("Reset keywords to defaults", type="primary", use_container_width=True):
-        # Clear all, then rely on backend defaults on next fetch
-        updated = _post_keywords({"clear_defaults": True, "add": {}})
-        # After clearing, fetch again (backend is expected to restore defaults on GET)
-        st.session_state.pop("keywords", None)
-        st.rerun()
-
-# -----------------------------
-# Session bootstrap
-# -----------------------------
+# -------------------------
+# SESSION STATE
+# -------------------------
+if "result" not in st.session_state:
+    st.session_state.result = None       # API /process/upload response
+if "df" not in st.session_state:
+    st.session_state.df = None           # main table dataframe
+if "csv_bytes" not in st.session_state:
+    st.session_state.csv_bytes = None
+if "pdf_bytes" not in st.session_state:
+    st.session_state.pdf_bytes = None
 if "keywords" not in st.session_state:
-    st.session_state.keywords = _get_keywords()
-if "resp" not in st.session_state:
-    st.session_state.resp = None
+    st.session_state.keywords = None     # dict from backend (concept -> list of terms)
+if "process_time" not in st.session_state:
+    st.session_state.process_time = None
 
-# -----------------------------
-# Title
-# -----------------------------
-st.markdown("## FinTags – Financial Tagging UI")
-st.caption("Upload → Tag → Preview → Download")
 
-# -----------------------------
-# Keyword Manager (chips show ONLY concepts, not synonyms)
-# -----------------------------
-st.markdown("### Keyword Manager")
-with st.container():
-    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+def _get(url: str, **kwargs):
+    r = requests.get(url, timeout=120, **kwargs)
+    r.raise_for_status()
+    return r
 
-    # Show concept chips horizontally (no synonyms listed)
-    st.markdown('<div class="chip-wrap">', unsafe_allow_html=True)
-    for concept in list(st.session_state.keywords.keys()):
-        # Render chip
+
+def _post(url: str, **kwargs):
+    r = requests.post(url, timeout=600, **kwargs)
+    r.raise_for_status()
+    return r
+
+
+def _download_to_bytes(filename: str) -> bytes:
+    resp = _get(f"{API_BASE}/download/{filename}")
+    return resp.content
+
+
+def _load_keywords():
+    try:
+        data = _get(f"{API_BASE}/config/keywords").json()
+        st.session_state.keywords = data.get("keywords", {})
+    except Exception as e:
+        st.error(f"Failed to load keywords: {e}")
+
+
+def _display_header():
+    col1, col2 = st.columns([0.8, 0.2])
+    with col1:
+        st.markdown('<div class="big-title">FinTags AI</div>', unsafe_allow_html=True)
         st.markdown(
-            f'''
-            <div class="chip">
-                <span class="chip-title">{concept}</span>
-            </div>
-            ''',
-            unsafe_allow_html=True
+            '<div class="subtle">Automated Financial Metrics Extraction & Analysis</div>',
+            unsafe_allow_html=True,
         )
-        # Small remove button next to the chip (Streamlit needs a real widget to capture clicks)
-        # We'll render a tiny button right after each chip; visually it's close enough to "top-right"
-        if st.button("×", key=f"rm_concept_{concept}"):
-            new_kw = _post_keywords({"remove_concepts": [concept]})
-            if new_kw is not None:
-                st.session_state.keywords = new_kw
-                st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+    with col2:
+        st.write("")
+        st.write("")
+        st.markdown('<div class="subtle" style="text-align:right;">Powered by FinBERT & AI</div>', unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("**Add a new concept (synonyms are applied automatically in backend)**")
-    c1, c2 = st.columns([1, 2])
+
+def _metric_card(label: str, value: str | int):
+    st.markdown(f"""
+        <div class="card">
+          <div class="metric">{value}</div>
+          <div class="metric-label">{label}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_stat_row(df: pd.DataFrame):
+    cols = st.columns([1,1,1,1])
+    with cols[0]:
+        _metric_card("Metrics Found", len(df))
+    with cols[1]:
+        pages = sorted(set(df["Page"].astype(str).tolist())) if "Page" in df else ["—"]
+        _metric_card("Pages Analyzed", len(pages))
+    with cols[2]:
+        concepts = sorted(set(df["Concept"])) if "Concept" in df else []
+        _metric_card("Concepts Identified", len(concepts))
+    with cols[3]:
+        t = f"{st.session_state.process_time}s" if st.session_state.process_time else "—"
+        _metric_card("Processing Time", t)
+
+
+def _render_table(df: pd.DataFrame):
+    # order columns exactly like your screenshot
+    show = df.copy()
+    # Pretty confidence as %
+    if "Confidence" in show:
+        show["Confidence"] = (show["Confidence"].astype(float) * 100).round().astype(int).astype(str) + "%"
+    # trend pill
+    if "Trend" in show:
+        show["Trend"] = show["Trend"].fillna("").apply(lambda x: f'<span class="trend">{x}</span>' if x else "")
+    # page pretty
+    if "Page" in show:
+        show["Page"] = show["Page"].apply(lambda x: f"Page {int(x)}" if pd.notnull(x) else "—")
+
+    order = ["Concept", "Value", "Trend", "Page", "Confidence"]
+    for c in order:
+        if c not in show.columns:
+            show[c] = ""
+    show = show[order]
+
+    # render as html table (for the green trend pills)
+    st.markdown(
+        show.to_html(escape=False, index=False, classes="table"),
+        unsafe_allow_html=True
+    )
+
+
+def _render_downloads():
+    c1, c2 = st.columns([1,1])
     with c1:
-        new_concept = st.text_input("Concept", placeholder="e.g., Stock Price")
+        if st.session_state.csv_bytes:
+            st.download_button(
+                "⬇️  Download CSV",
+                data=st.session_state.csv_bytes,
+                file_name=(st.session_state.result or {}).get("csv", "fintags.csv"),
+                mime="text/csv",
+                type="primary",
+                use_container_width=False,
+            )
     with c2:
-        new_terms = st.text_input("Seed terms (optional, comma-separated)", placeholder="e.g., stock price")
+        if st.session_state.pdf_bytes:
+            st.download_button(
+                "⬇️  Download Highlighted PDF",
+                data=st.session_state.pdf_bytes,
+                file_name=(st.session_state.result or {}).get("highlighted_pdf", "highlighted.pdf"),
+                mime="application/pdf",
+                type="primary",
+                use_container_width=False,
+            )
 
-    if st.button("Add / Merge", type="primary"):
-        if not new_concept.strip():
-            st.warning("Please type a concept name.")
+
+# -------------------------
+# UI HEADER
+# -------------------------
+_display_header()
+st.write("")
+
+# -------------------------
+# TABS (match your screenshots)
+# -------------------------
+tabs = st.tabs(["📤 Upload & Process", "🧾 Analysis Results", "📊 Analytics", "⚙️ Keywords"])
+
+# --------------------------------------------------------
+# TAB 1 — Upload & Process
+# --------------------------------------------------------
+with tabs[0]:
+    st.markdown('<div class="tabcont">', unsafe_allow_html=True)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Upload Financial Report")
+    up = st.file_uploader(" ", type=["pdf"], label_visibility="collapsed")
+
+    analyze = st.button("Analyze Document", type="primary")
+    if analyze:
+        if not up:
+            st.warning("Please upload a PDF first.")
         else:
-            payload = {"add": {new_concept.strip(): []}, "auto_synonyms": True}
-            # if user gave seed terms, add them (backend will auto-expand)
-            if new_terms.strip():
-                terms = [t.strip() for t in new_terms.split(",") if t.strip()]
-                payload = {"add": {new_concept.strip(): terms}, "auto_synonyms": True}
-            new_kw = _post_keywords(payload)
-            if new_kw is not None:
-                st.session_state.keywords = new_kw
-                st.success(f"Concept '{new_concept.strip()}' added.")
-                st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# -----------------------------
-# Upload & Process
-# -----------------------------
-st.markdown("### Upload & Process")
-with st.container():
-    st.markdown('<div class="section-box">', unsafe_allow_html=True)
-    up = st.file_uploader("Upload a financial PDF", type=["pdf"], accept_multiple_files=False)
-    go = st.button("Submit", type="primary")
-    if go and up is not None:
-        with st.spinner("Processing…"):
             try:
-                resp = _process_pdf(up)
-                st.session_state.resp = resp
-                st.success("Done.")
+                t0 = time.time()
+                files = {"file": (up.name, up.read(), "application/pdf")}
+                res = _post(f"{API_BASE}/process/upload", files=files).json()
+
+                # store result, load CSV into df, fetch files for downloads
+                st.session_state.result = res
+                st.session_state.process_time = res.get("processing_time", max(1, int(time.time() - t0)))
+
+                # CSV
+                csv_name = res.get("csv")
+                csv_bytes = _download_to_bytes(csv_name) if csv_name else None
+                st.session_state.csv_bytes = csv_bytes
+                df = pd.read_csv(io.BytesIO(csv_bytes)) if csv_bytes else None
+                st.session_state.df = df
+
+                # PDF
+                pdf_name = res.get("highlighted_pdf")
+                st.session_state.pdf_bytes = _download_to_bytes(pdf_name) if pdf_name else None
+
+                st.success("File processed successfully.")
+                st.experimental_rerun()  # simple refresh so the other tabs see data
+
             except Exception as e:
                 st.error(f"Processing failed: {e}")
-    st.markdown('</div>', unsafe_allow_html=True)
 
-# -----------------------------
-# Preview Sentences
-# -----------------------------
-st.markdown("### Preview Sentences")
-with st.container():
-    st.markdown('<div class="section-box">', unsafe_allow_html=True)
-    if st.session_state.resp:
-        preview = st.session_state.resp.get("preview_sentences", [])
-        if preview:
-            for s in preview:
-                st.markdown("- " + s)
-        else:
-            st.caption("No preview sentences returned.")
+    st.markdown('</div></div>', unsafe_allow_html=True)
+
+# --------------------------------------------------------
+# TAB 2 — Analysis Results
+# --------------------------------------------------------
+with tabs[1]:
+    st.markdown('<div class="tabcont">', unsafe_allow_html=True)
+    st.subheader("Analysis Results")
+
+    if st.session_state.df is None:
+        st.info("Upload a PDF on the **Upload & Process** tab to see results.")
     else:
-        st.caption("Upload a PDF to see preview sentences.")
+        # stat cards
+        _render_stat_row(st.session_state.df)
+        st.write("")
+        # buttons
+        _render_downloads()
+        st.write("")
+        # table
+        _render_table(st.session_state.df)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
-# -----------------------------
-# Detected Tables (if backend returns them)
-# -----------------------------
-st.markdown("### Detected Tables")
-with st.container():
-    st.markdown('<div class="section-box">', unsafe_allow_html=True)
-    if st.session_state.resp and "tables_preview" in st.session_state.resp:
-        tprev = st.session_state.resp["tables_preview"] or []
-        if not tprev:
-            st.caption("No tables detected.")
-        else:
-            # Combine rows from each table into small dataframes
-            for i, tb in enumerate(tprev, start=1):
-                st.markdown(f"**Table {i} – Page {tb.get('page', '?')}**")
-                rows = tb.get("rows", [])
-                if rows:
-                    df = pd.DataFrame(rows)
-                    st.dataframe(df, use_container_width=True)
-                else:
-                    st.caption("Empty table.")
+# --------------------------------------------------------
+# TAB 3 — Analytics (simple frequency bars)
+# --------------------------------------------------------
+with tabs[2]:
+    st.markdown('<div class="tabcont">', unsafe_allow_html=True)
+    st.subheader("Financial Metrics Analytics")
+
+    df = st.session_state.df
+    if df is None:
+        st.info("Upload a PDF first.")
     else:
-        st.caption("Your backend is not returning table previews yet.")
+        counts = df["Concept"].value_counts().rename_axis("Concept").reset_index(name="Count")
+        st.bar_chart(counts.set_index("Concept"))
     st.markdown('</div>', unsafe_allow_html=True)
 
-# -----------------------------
-# Downloads
-# -----------------------------
-st.markdown("### Downloads")
-with st.container():
-    st.markdown('<div class="section-box">', unsafe_allow_html=True)
-    if st.session_state.resp:
-        csv_name = st.session_state.resp.get("csv")
-        pdf_name = st.session_state.resp.get("highlighted_pdf")
+# --------------------------------------------------------
+# TAB 4 — Keywords (show only canonical names; backend keeps synonyms)
+# --------------------------------------------------------
+with tabs[3]:
+    st.markdown('<div class="tabcont">', unsafe_allow_html=True)
+    st.subheader("Financial Keywords Management")
 
-        c1, c2 = st.columns(2)
-        with c1:
-            if csv_name:
-                try:
-                    data = _download_bytes(csv_name)
-                    st.download_button(
-                        label="Download CSV",
-                        data=data,
-                        file_name=csv_name,
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-                except Exception as e:
-                    st.error(f"CSV download failed: {e}")
+    if st.session_state.keywords is None:
+        _load_keywords()
+
+    # Add box
+    cA, cB = st.columns([6,1])
+    with cA:
+        new_kw = st.text_input("Add new financial concept…", label_visibility="collapsed",
+                               placeholder="Add new financial concept…")
+    with cB:
+        if st.button("+  Add", use_container_width=True):
+            if not new_kw.strip():
+                st.warning("Type a concept name.")
             else:
-                st.caption("No CSV yet.")
-
-        with c2:
-            if pdf_name:
                 try:
-                    data = _download_bytes(pdf_name)
-                    st.download_button(
-                        label="Download Highlighted PDF",
-                        data=data,
-                        file_name=pdf_name,
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
+                    # Tell backend to add the concept and auto-expand synonyms there.
+                    payload = {
+                        "add": {new_kw.strip(): [new_kw.strip()]},
+                        "auto_synonyms": True
+                    }
+                    _post(f"{API_BASE}/config/keywords", json=payload)
+                    _load_keywords()
+                    st.success(f"Added: {new_kw.strip()}")
+                    st.experimental_rerun()
                 except Exception as e:
-                    st.error(f"PDF download failed: {e}")
-            else:
-                st.caption("No PDF yet.")
+                    st.error(f"Add failed: {e}")
+
+    st.write("")
+    st.caption("Active Keywords")
+
+    # Show ONLY canonical names (keys), not the synonym list
+    if st.session_state.keywords:
+        # render chips
+        cols = st.columns(4)
+        i = 0
+        removed = None
+        for concept in sorted(st.session_state.keywords.keys()):
+            with cols[i % 4]:
+                st.markdown(
+                    f'<div class="kw-chip">{concept}'
+                    f' <span class="del" id="del-{concept}">🗑</span></div>',
+                    unsafe_allow_html=True
+                )
+                # Give each a real button (same row feel)
+                if st.button("Delete", key=f"delbtn::{concept}", help=f"Delete {concept}"):
+                    removed = concept
+            i += 1
+
+        if removed:
+            try:
+                payload = {"remove_concepts": [removed]}
+                _post(f"{API_BASE}/config/keywords", json=payload)
+                _load_keywords()
+                st.success(f"Removed: {removed}")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Delete failed: {e}")
     else:
-        st.caption("Process a PDF to enable downloads.")
+        st.info("No keywords loaded.")
     st.markdown('</div>', unsafe_allow_html=True)

@@ -1,87 +1,116 @@
+# app/value_extractor.py
 import re
-from typing import Tuple, Optional
+from typing import Optional, Tuple, Dict
 
-UNIT_SCALE = {
-    "k": 1_000, "thousand": 1_000,
-    "m": 1_000_000, "mn": 1_000_000, "million": 1_000_000,
-    "b": 1_000_000_000, "bn": 1_000_000_000, "billion": 1_000_000_000,
+# Magnitudes
+_MAG = {
+    "billion": 1_000_000_000, "bn": 1_000_000_000,
+    "million": 1_000_000, "mn": 1_000_000,
+    "thousand": 1_000, "k": 1_000
 }
 
-MONEY_RE = re.compile(
-    r"""(?P<cur>[$£€])?\s?
-        (?P<min>\d[\d,]*\.?\d*)
-        (?:\s?[–\-]\s?(?P<max>\d[\d,]*\.?\d*))?
-        \s?(?P<unit>k|m|mn|b|bn|thousand|million|billion)?\b
-    """, re.IGNORECASE | re.VERBOSE)
+# Normalize dash
+_DASH = r"[-–—]"
 
-PCT_RE = re.compile(
-    r"""(?P<pmin>\d[\d,]*\.?\d*)
-        (?:\s?[–\-]\s?(?P<pmax>\d[\d,]*\.?\d*))?
-        \s?%""", re.IGNORECASE | re.VERBOSE)
+# $ ranges like $29.0-$29.8 billion  OR  29.0-29.8 billion (no $ but with billion/million)
+USD_RANGE_RE = re.compile(
+    rf"""
+    (?P<prefix>\$)?\s?
+    (?P<v1>\d[\d,]*\.?\d*)
+    \s*{_DASH}\s*
+    (?P<v2>\d[\d,]*\.?\d*)
+    \s*(?P<mag>billion|bn|million|mn|thousand|k)?
+    """, re.IGNORECASE | re.VERBOSE
+)
 
-YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+# plain $ single value with optional magnitude word
+USD_SINGLE_RE = re.compile(
+    r"""
+    (?P<prefix>\$)\s?
+    (?P<v>\d[\d,]*\.?\d*)
+    \s*(?P<mag>billion|bn|million|mn|thousand|k)?
+    """, re.IGNORECASE | re.VERBOSE
+)
 
-def _to_float(s: str) -> float:
-    return float(s.replace(",", ""))
+# word-magnitude single value without $  e.g. 13.2b, 5.0 billion
+USD_WORDVAL_RE = re.compile(
+    r"""
+    (?P<v>\d[\d,]*\.?\d*)\s*
+    (?P<mag>billion|bn|million|mn|thousand|k)\b
+    """, re.IGNORECASE | re.VERBOSE
+)
 
-def _scale(val: float, unit: Optional[str]) -> float:
-    if not unit:
-        return val
-    unit = unit.lower()
-    return val * UNIT_SCALE.get(unit, 1)
+# percent ranges like 6-9%  or 6 – 9 %
+PCT_RANGE_RE = re.compile(
+    rf"""
+    (?P<p1>\d[\d,]*\.?\d*)\s*%?
+    \s*{_DASH}\s*
+    (?P<p2>\d[\d,]*\.?\d*)\s*%
+    """, re.IGNORECASE | re.VERBOSE
+)
 
-def pick_best_value(text: str) -> Tuple[str, Optional[str], str, str]:
+# single percent like 8% or 0.5 %
+PCT_SINGLE_RE = re.compile(
+    r"(?P<p>\d[\d,]*\.?\d*)\s?%", re.IGNORECASE
+)
+
+BPS_RE = re.compile(r"(?P<bps>\d[\d,]{0,4})\s?bps\b", re.IGNORECASE)
+
+def _to_float(x: str) -> float:
+    return float(x.replace(",", ""))
+
+def _apply_mag(v: float, mag: Optional[str]) -> float:
+    if not mag:
+        return v
+    m = mag.lower()
+    return v * _MAG.get(m, 1.0)
+
+def extract_best_value(sentence: str) -> Dict[str, Optional[str]]:
     """
-    Returns:
-      value_text (human string, e.g., "$29.8B" or "6–9%")
-      normalized (string integer/float w/o commas; for ranges, the UPPER bound)
-      currency_or_unit ("$", "£", "€", or "%")
-      value_type ("money" | "percent" | "eps" | "other")
+    Returns a single 'best' value found in the sentence for CSV display:
+    - prefers $ range center, else $ single, else % range center, else % single, else bps
+    Also returns the raw 'value_text' and 'unit'.
     """
-    t = text
+    s = sentence
 
-    mp = PCT_RE.search(t)
-    if mp:
-        pmin = float(mp.group("pmin").replace(",", ""))
-        pmax = mp.group("pmax")
-        if pmax:
-            pmaxf = float(pmax.replace(",", ""))
-            val_text = f"{pmin:g}–{pmaxf:g}%"
-            normalized = f"{pmaxf:g}"
-        else:
-            val_text = f"{pmin:g}%"
-            normalized = f"{pmin:g}"
-        return val_text, normalized, "%", "percent"
+    # 1) $ range
+    m = USD_RANGE_RE.search(s)
+    if m:
+        v1 = _apply_mag(_to_float(m.group("v1")), m.group("mag"))
+        v2 = _apply_mag(_to_float(m.group("v2")), m.group("mag"))
+        center = (v1 + v2) / 2.0
+        return {"value": f"{center:.6g}", "unit": "$", "value_text": m.group(0).strip()}
 
-    mm = MONEY_RE.search(t)
-    if mm:
-        cur = mm.group("cur") or "$"
-        vmin = _to_float(mm.group("min"))
-        vmax = mm.group("max")
-        unit = mm.group("unit")
+    # 2) $ single with $ prefix
+    m = USD_SINGLE_RE.search(s)
+    if m:
+        val = _apply_mag(_to_float(m.group("v")), m.group("mag"))
+        return {"value": f"{val:.6g}", "unit": "$", "value_text": m.group(0).strip()}
 
-        def human(x: float) -> str:
-            if x >= 1_000_000_000: return f"{x/1_000_000_000:.1f}B"
-            if x >= 1_000_000:     return f"{x/1_000_000:.1f}M"
-            if x >= 1_000:         return f"{x/1_000:.1f}K"
-            return f"{x:g}"
+    # 3) word-magnitude like 13.2b
+    m = USD_WORDVAL_RE.search(s)
+    if m:
+        val = _apply_mag(_to_float(m.group("v")), m.group("mag"))
+        return {"value": f"{val:.6g}", "unit": "$", "value_text": m.group(0).strip()}
 
-        if vmax:
-            vmaxf = _to_float(vmax)
-            vmin_s = _scale(vmin, unit)
-            vmax_s = _scale(vmaxf, unit)
-            val_text = f"{cur}{human(vmin_s)}–{cur}{human(vmax_s)}"
-            normalized = str(int(round(vmax_s)))  # upper bound
-            return val_text, normalized, cur, "money"
-        else:
-            v = _scale(vmin, unit)
-            val_text = f"{cur}{human(v)}"
-            normalized = str(int(round(v)))
-            return val_text, normalized, cur, "money"
+    # 4) % range
+    m = PCT_RANGE_RE.search(s)
+    if m:
+        p1 = _to_float(m.group("p1"))
+        p2 = _to_float(m.group("p2"))
+        center = (p1 + p2) / 2.0
+        return {"value": f"{center:.6g}", "unit": "%", "value_text": m.group(0).strip()}
 
-    eps = re.search(r"\b(\d+\.\d{1,3})\s*(?:per\s+share|eps)\b", t, re.I)
-    if eps:
-        v = eps.group(1)
-        return v, v, "$", "eps"
+    # 5) % single
+    m = PCT_SINGLE_RE.search(s)
+    if m:
+        p = _to_float(m.group("p"))
+        return {"value": f"{p:.6g}", "unit": "%", "value_text": m.group(0).strip()}
 
-    return "", None, "", "other"
+    # 6) bps
+    m = BPS_RE.search(s)
+    if m:
+        b = _to_float(m.group("bps"))
+        return {"value": f"{b:.6g}", "unit": "bps", "value_text": m.group(0).strip()}
+
+    return {"value": "", "unit": "", "value_text": ""}
