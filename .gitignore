@@ -1,0 +1,20 @@
+# Python / build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.log
+
+# Virtual env
+.venv/
+
+# Local data / outputs
+outputs/
+data_uploads/
+*.pdf
+*.csv
+
+# Models & weights (keep them out of git)
+models/finbert_crossenc/
+models/lora_classifier/
