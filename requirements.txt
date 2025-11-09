@@ -1,1 +1,12 @@
-fastapi==0.115.0uvicorn==0.30.6python-multipart==0.0.9pydantic==2.9.2pandas==2.2.2pymupdf==1.24.10torch==2.2.2sentence-transformers==2.7.0requests==2.32.3streamlit==1.38.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi==0.115.5
+uvicorn[standard]==0.30.6
+sentence-transformers==2.7.0
+transformers==4.45.2
+torch==2.4.1
+PyMuPDF==1.24.10
+pandas==2.2.2
+numpy==1.26.4
+pydantic==2.9.2
+scikit-learn==1.5.2
