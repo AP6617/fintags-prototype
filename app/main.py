@@ -1,10 +1,4 @@
-# FINTAGS PROTOTYPE - main.py
-# This is the main server file for the FinTags prototype.
-# It includes:
-# 1. A FastAPI server to upload PDFs.
-# 2. A "Manual Parser" that splits prose from tables.
-# 3. A "RAG" system to classify the text.
-# 4. A PDF highlighter to show the results.
+
 
 from __future__ import annotations
 import re
